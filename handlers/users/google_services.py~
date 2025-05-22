@@ -1,0 +1,87 @@
+import logging
+import os
+
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from data.config import GOOGLE_CREDENTIALS_FILE, SPREADSHEET_ID, SHEET_NAME, DRIVE_FOLDER_ID
+
+# Google Sheets ga ulanish
+def connect_to_google_sheets():
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_FILE, scope)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+        return sheet
+    except Exception as e:
+        logging.error(f"Google Sheets ulanishda xato: {str(e)}")
+        raise
+
+# Google Drive ga ulanish
+def connect_to_google_drive():
+    try:
+        scope = ['https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_FILE, scope)
+        drive_service = build('drive', 'v3', credentials=creds)
+        return drive_service
+    except Exception as e:
+        logging.error(f"Google Drive ulanishda xato: {str(e)}")
+        raise
+
+# Papka mavjudligini tekshirish
+def check_folder_exists(drive_service, folder_id):
+    try:
+        folder = drive_service.files().get(fileId=folder_id).execute()
+        logging.info(f"Papka mavjud: {folder['name']} (ID: {folder_id})")
+        return True
+    except HttpError as e:
+        logging.error(f"Papka ID {folder_id} topilmadi: {str(e)}")
+        return False
+
+# Yangi papka yaratish
+def create_drive_folder(drive_service, folder_name, parent_folder_id=None):
+    try:
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        if parent_folder_id:
+            file_metadata['parents'] = [parent_folder_id]
+        folder = drive_service.files().create(body=file_metadata, fields='id, webViewLink').execute()
+        folder_id = folder.get('id')
+        drive_service.permissions().create(
+            fileId=folder_id,
+            body={'type': 'anyone', 'role': 'reader'}
+        ).execute()
+        logging.info(f"Yangi papka yaratildi: {folder_name} (ID: {folder_id})")
+        return folder_id, folder.get('webViewLink')
+    except HttpError as e:
+        logging.error(f"Papka yaratishda xato: {str(e)}")
+        return None, None
+
+# Google Drive ga fayl yuklash
+def upload_to_drive(file_path, mime_type, folder_id):
+    try:
+        drive_service = connect_to_google_drive()
+        file_metadata = {
+            'name': os.path.basename(file_path),
+            'parents': [folder_id]
+        }
+        media = MediaFileUpload(file_path, mimetype=mime_type)
+        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        file_id = file.get('id')
+        drive_service.permissions().create(
+            fileId=file_id,
+            body={'type': 'anyone', 'role': 'reader'}
+        ).execute()
+        logging.info(f"Fayl muvaffaqiyatli yuklandi, ID: {file_id}")
+        return file_id
+    except HttpError as e:
+        logging.error(f"Google Drive ga yuklashda xato: {str(e)}")
+        return None
+    except Exception as e:
+        logging.error(f"Umumiy xato: {str(e)}")
+        return None
